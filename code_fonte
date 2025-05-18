@@ -2,7 +2,7 @@ function criarUsuariosDaPlanilha() {
   const spreadsheetId = "SUA_PLANILHA_ID_AQUI";
   const domain = "seudominio.com";
   const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
-  const sheets = spreadsheet.getSheets().filter(sheet => sheet.getName().includes("2025"));
+  const sheets = spreadsheet.getSheets().filter(sheet => sheet.getName().includes("2025")); //modificar de acordo com o nome da aba da planilha
 
   sheets.forEach(sheet => {
     const sheetName = sheet.getName();
