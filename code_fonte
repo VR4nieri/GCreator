@@ -1,0 +1,174 @@
+function criarUsuariosDaPlanilha() {
+  const spreadsheetId = "SUA_PLANILHA_ID_AQUI";
+  const domain = "seudominio.com";
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheets = spreadsheet.getSheets().filter(sheet => sheet.getName().includes("2025"));
+
+  sheets.forEach(sheet => {
+    const sheetName = sheet.getName();
+    Logger.log(`Processando aba: ${sheetName}`);
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 10).getValues();
+
+    data.forEach((row, index) => {
+      const nomeCompleto = row[1] ? removerAcentos(row[1].trim()) : "";
+      const emailPessoal = row[2];
+      const emailGeradoExistente = row[4];
+      const unidadeOrganizacional = row[8];
+      const groupEmail = row[9];
+      const linhaAtual = index + 2;
+
+      if (emailGeradoExistente) {
+        Logger.log(`Linha ${linhaAtual} na aba ${sheetName} já processada. Pulando...`);
+        return;
+      }
+
+      if (nomeCompleto && emailPessoal && unidadeOrganizacional && groupEmail) {
+        try {
+          let iniciais = nomeCompleto
+            .split(" ")
+            .filter(nome => !["da", "de", "do", "das", "dos", "e"].includes(nome.toLowerCase()))
+            .map(nome => nome.charAt(0).toLowerCase())
+            .join("");
+
+          let emailGerado = `${iniciais}@${domain}`;
+          let contador = 1;
+
+          while (emailJaExiste(emailGerado)) {
+            contador++;
+            emailGerado = `${iniciais}${contador}@${domain}`;
+          }
+
+          const password = gerarSenha(12);
+          const user = AdminDirectory.Users.insert({
+            name: {
+              givenName: nomeCompleto.split(" ")[0],
+              familyName: nomeCompleto.split(" ").slice(1).join(" "),
+            },
+            password: password,
+            primaryEmail: emailGerado,
+            changePasswordAtNextLogin: true,
+            orgUnitPath: unidadeOrganizacional,
+          });
+
+          const userId = user.id;
+          sheet.getRange(linhaAtual, 5).setValue(emailGerado);
+          sheet.getRange(linhaAtual, 7).setValue(userId);
+          sheet.getRange(linhaAtual, 8).setValue("OK");
+          waitForUserCreation(userId);
+
+          const grupo = groupEmail?.trim();
+          if (grupo) {
+            adicionarUsuarioAoGrupo(emailGerado, grupo);
+          }
+
+          const primeiroNome = nomeCompleto.split(" ")[0];
+          const sobrenomes = nomeCompleto
+            .split(" ")
+            .slice(1)
+            .filter(nome => !["da", "de", "do", "das", "dos", "e"].includes(nome.toLowerCase()));
+
+          let aliasCriado = "";
+          if (sobrenomes.length >= 2) {
+            const ultimosSobrenomes = sobrenomes.slice(-2);
+            for (let i = ultimosSobrenomes.length - 1; i >= 0; i--) {
+              const alias = `${primeiroNome.toLowerCase()}.${removerAcentos(ultimosSobrenomes[i].toLowerCase())}@${domain}`;
+              if (!emailJaExiste(alias)) {
+                AdminDirectory.Users.Aliases.insert({ alias: alias }, userId);
+                aliasCriado = alias;
+                sheet.getRange(linhaAtual, 6).setValue(aliasCriado);
+                Logger.log(`Alias criado: ${aliasCriado}`);
+                break;
+              }
+            }
+          }
+
+          if (!aliasCriado) {
+            Logger.log(`Nenhum alias disponível para ${nomeCompleto}.`);
+          }
+
+          enviarEmailPadrao(emailPessoal, emailGerado, password, primeiroNome);
+          Logger.log(`Usuário criado: ${nomeCompleto} (${emailGerado}, ID: ${userId}) e e-mail enviado para ${emailPessoal}`);
+        } catch (e) {
+          Logger.log(`Erro ao criar usuário ${nomeCompleto} ou enviar e-mail: ${e.message}`);
+        }
+      } else {
+        Logger.log(`Linha ${linhaAtual} na aba ${sheetName} não possui todos os dados necessários. Pulando...`);
+      }
+    });
+  });
+}
+
+function removerAcentos(str) {
+  return str.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+function adicionarUsuarioAoGrupo(userEmail, groupEmail) {
+  try {
+    AdminDirectory.Members.insert({
+      email: userEmail,
+      role: "MEMBER"
+    }, groupEmail);
+    Logger.log(`Usuário ${userEmail} adicionado ao grupo ${groupEmail}.`);
+  } catch (e) {
+    Logger.log(`Erro ao adicionar o usuário ${userEmail} ao grupo ${groupEmail}: ${e.message}`);
+  }
+}
+
+function waitForUserCreation(userId) {
+  let attempts = 0;
+  while (attempts < 10) {
+    try {
+      const user = AdminDirectory.Users.get(userId);
+      if (!user.suspended) {
+        return;
+      }
+    } catch (e) {
+      Logger.log(`Esperando usuário ser criado: ${e.message}`);
+    }
+    Utilities.sleep(10000);
+    attempts++;
+  }
+  throw new Error(`Não foi possível confirmar a criação do usuário ID: ${userId}`);
+}
+
+function gerarSenha(length) {
+  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()";
+  let password = "";
+  for (let i = 0; i < length; i++) {
+    password += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return password;
+}
+
+function emailJaExiste(email) {
+  try {
+    AdminDirectory.Users.get(email);
+    return true;
+  } catch (e) {
+    if (e.message.includes("Resource Not Found")) {
+      return false;
+    }
+    throw e;
+  }
+}
+
+function enviarEmailPadrao(destinatario, login, senha, primeiroNome) {
+  const assunto = "Sua conta Google foi criada!";
+  const mensagem = `
+    Olá, ${primeiroNome}!
+
+    Sua conta institucional foi criada com sucesso. Aqui estão seus dados de acesso:
+
+    Login: ${login}
+    Senha provisória: ${senha}
+
+    Ao acessar pela primeira vez, será solicitado que você altere sua senha. 
+    Acesse: https://mail.google.com
+
+    Qualquer dúvida, entre em contato com o suporte.
+    
+    Obrigado!
+  `;
+
+  GmailApp.sendEmail(destinatario, assunto, mensagem);
+}
